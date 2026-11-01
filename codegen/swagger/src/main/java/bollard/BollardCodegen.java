@@ -27,6 +27,8 @@ public class BollardCodegen extends RustServerCodegen {
                 "Mapping Swagger to legacy Bollard Query Parameter types, delimited by comma and colon");
 
         cliOptions.add(option);
+        cliOptions.add(new CliOption("queryParameterMinimumVersions",
+                "Docker Engine API version each query parameter needs, as OperationId.parameter=1.49 lines"));
 
         supportsInheritance = false;
         supportsMixins = true;
@@ -91,6 +93,10 @@ public class BollardCodegen extends RustServerCodegen {
 
     private HashMap<String, String> queryParameterMappings = new HashMap();
 
+    // Keyed by `OperationId.parameter`. Entries are removed once applied, so any left over
+    // after generation name no generated setter.
+    private final Map<String, String> queryParameterMinimumVersions = new TreeMap<>();
+
     @Override
     public void preprocessSwagger(Swagger swagger) {
         Info info = swagger.getInfo();
@@ -106,6 +112,23 @@ public class BollardCodegen extends RustServerCodegen {
                 if (cliOptionLineSplit.length == 2) {
                     queryParameterMappings.put(cliOptionLineSplit[0].trim(), cliOptionLineSplit[1].trim());
                 }
+            }
+        }
+
+        String cliOptionQueryParameterMinimumVersions = (String) additionalProperties.get("queryParameterMinimumVersions");
+        if (cliOptionQueryParameterMinimumVersions != null) {
+            for (String cliOptionLine : cliOptionQueryParameterMinimumVersions.split("\n")) {
+                if (cliOptionLine.trim().isEmpty()) {
+                    continue;
+                }
+                String[] cliOptionLineSplit = cliOptionLine.split("=");
+                if (cliOptionLineSplit.length != 2
+                        || !cliOptionLineSplit[0].trim().matches("\\w+\\.[\\w-]+")
+                        || !cliOptionLineSplit[1].trim().matches("\\d+\\.\\d+")) {
+                    throw new IllegalArgumentException(
+                            "queryParameterMinimumVersions line is not OperationId.parameter=1.49: " + cliOptionLine.trim());
+                }
+                queryParameterMinimumVersions.put(cliOptionLineSplit[0].trim(), cliOptionLineSplit[1].trim());
             }
         }
 
@@ -469,6 +492,11 @@ public class BollardCodegen extends RustServerCodegen {
                             param.vendorExtensions.put("x-codegen-query-param-rename", param.baseName);
                         }
 
+                        String minimumVersion = queryParameterMinimumVersions.remove(operation.operationId + "." + param.baseName);
+                        if (minimumVersion != null) {
+                            param.vendorExtensions.put("x-codegen-query-param-min-version", minimumVersion);
+                        }
+
                         // Special handling for building images
                         if (operation.operationId.equals("ImageBuild")) {
                             // `buildargs` and `labels` are passed to the Docker server as JSON map
@@ -532,6 +560,16 @@ public class BollardCodegen extends RustServerCodegen {
         }
 
         return objs;
+    }
+
+    @Override
+    public Map<String, Object> postProcessSupportingFileData(Map<String, Object> objs) {
+        if (!queryParameterMinimumVersions.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "queryParameterMinimumVersions names no generated query parameter: "
+                            + queryParameterMinimumVersions.keySet());
+        }
+        return super.postProcessSupportingFileData(objs);
     }
 
 }

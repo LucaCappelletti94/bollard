@@ -16,7 +16,7 @@ use hyper::Method;
 
 use std::collections::HashMap;
 
-use super::{ClientVersion, Docker};
+use super::Docker;
 use crate::auth::{DockerCredentials, DockerCredentialsHeader};
 use crate::docker::{body_try_stream, BodyType};
 use crate::errors::Error;
@@ -162,10 +162,6 @@ impl Docker {
     /// - Image name as a string slice.
     /// - An optional [Inspect Image Options](crate::query_parameters::InspectImageOptions) struct.
     ///
-    /// The `manifests` option needs API version 1.48 (Docker Engine 28.0) and `platform` needs
-    /// 1.49 (Docker Engine 28.1). A request at an older version, or to Podman, is answered as if
-    /// they were unset, and a warning is logged.
-    ///
     /// # Returns
     ///
     ///  - [ImageInspect](ImageInspect), wrapped in a Future.
@@ -190,24 +186,14 @@ impl Docker {
     ) -> Result<ImageInspect, Error> {
         let url = format!("/images/{}/json", escape_reference(image_name));
 
-        let options: Option<crate::query_parameters::InspectImageOptions> = options.map(Into::into);
         let req = self.build_request(
             &url,
             Builder::new().method(Method::GET),
-            options.as_ref(),
+            options.map(Into::into),
             Ok(BodyType::Left(Full::new(Bytes::new()))),
         );
 
-        let (inspect, version) = self.process_into_value_with_version(req).await?;
-        if let (Some(options), Some(version)) = (&options, version) {
-            for (parameter, since) in ignored_inspect_parameters(options, version) {
-                log::warn!(
-                    "inspect_image option `{parameter}` needs API version {since}, \
-                     but the daemon answered at {version} and ignored it"
-                );
-            }
-        }
-        Ok(inspect)
+        self.process_into_value(req).await
     }
 
     /// ---
@@ -1217,30 +1203,6 @@ impl Docker {
     }
 }
 
-/// Yields each option set in `options` that a daemon answering at API `version` ignores, with
-/// the API version that option needs.
-fn ignored_inspect_parameters(
-    options: &crate::query_parameters::InspectImageOptions,
-    version: ClientVersion,
-) -> impl Iterator<Item = (&'static str, ClientVersion)> {
-    const MANIFESTS_SINCE: ClientVersion = ClientVersion {
-        major_version: 1,
-        minor_version: 48,
-    };
-    const PLATFORM_SINCE: ClientVersion = ClientVersion {
-        major_version: 1,
-        minor_version: 49,
-    };
-
-    [
-        ("manifests", options.manifests, MANIFESTS_SINCE),
-        ("platform", options.platform.is_some(), PLATFORM_SINCE),
-    ]
-    .into_iter()
-    .filter(move |&(_, set, since)| set && version < since)
-    .map(|(parameter, _, since)| (parameter, since))
-}
-
 #[cfg(not(windows))]
 #[cfg(test)]
 mod tests {
@@ -1397,42 +1359,5 @@ mod tests {
             result,
             Err(crate::errors::Error::MissingVersionBuildkitError {})
         ));
-    }
-
-    mod ignored_inspect_parameters {
-        use crate::query_parameters::InspectImageOptionsBuilder;
-        use crate::ClientVersion;
-
-        use super::super::ignored_inspect_parameters;
-
-        const fn version(minor_version: usize) -> ClientVersion {
-            ClientVersion {
-                major_version: 1,
-                minor_version,
-            }
-        }
-
-        fn ignored(
-            options: &crate::query_parameters::InspectImageOptions,
-            minor_version: usize,
-        ) -> Vec<(&'static str, ClientVersion)> {
-            ignored_inspect_parameters(options, version(minor_version)).collect()
-        }
-
-        #[test]
-        fn manifests_floor() {
-            let options = InspectImageOptionsBuilder::new().manifests(true).build();
-            assert_eq!(ignored(&options, 47), [("manifests", version(48))]);
-            assert_eq!(ignored(&options, 48), []);
-        }
-
-        #[test]
-        fn platform_floor() {
-            let options = InspectImageOptionsBuilder::new()
-                .platform(r#"{"os":"linux","architecture":"arm64"}"#)
-                .build();
-            assert_eq!(ignored(&options, 48), [("platform", version(49))]);
-            assert_eq!(ignored(&options, 49), []);
-        }
     }
 }
