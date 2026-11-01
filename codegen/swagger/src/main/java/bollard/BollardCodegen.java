@@ -93,9 +93,9 @@ public class BollardCodegen extends RustServerCodegen {
 
     private HashMap<String, String> queryParameterMappings = new HashMap();
 
-    // Keyed by `OperationId.parameter`. Entries are removed once applied, so any left over
-    // after generation name no generated setter.
-    private final Map<String, String> queryParameterMinimumVersions = new TreeMap<>();
+    // Keyed by `OperationId.parameter`.
+    private final Map<String, String> queryParameterMinimumVersions = new HashMap<>();
+    private final Set<String> appliedQueryParameterMinimumVersions = new HashSet<>();
 
     @Override
     public void preprocessSwagger(Swagger swagger) {
@@ -492,9 +492,11 @@ public class BollardCodegen extends RustServerCodegen {
                             param.vendorExtensions.put("x-codegen-query-param-rename", param.baseName);
                         }
 
-                        String minimumVersion = queryParameterMinimumVersions.remove(operation.operationId + "." + param.baseName);
+                        String minimumVersionKey = operation.operationId + "." + param.baseName;
+                        String minimumVersion = queryParameterMinimumVersions.get(minimumVersionKey);
                         if (minimumVersion != null) {
                             param.vendorExtensions.put("x-codegen-query-param-min-version", minimumVersion);
+                            appliedQueryParameterMinimumVersions.add(minimumVersionKey);
                         }
 
                         // Special handling for building images
@@ -564,10 +566,11 @@ public class BollardCodegen extends RustServerCodegen {
 
     @Override
     public Map<String, Object> postProcessSupportingFileData(Map<String, Object> objs) {
-        if (!queryParameterMinimumVersions.isEmpty()) {
+        Set<String> unapplied = new TreeSet<>(queryParameterMinimumVersions.keySet());
+        unapplied.removeAll(appliedQueryParameterMinimumVersions);
+        if (!unapplied.isEmpty()) {
             throw new IllegalArgumentException(
-                    "queryParameterMinimumVersions names no generated query parameter: "
-                            + queryParameterMinimumVersions.keySet());
+                    "queryParameterMinimumVersions names no generated query parameter: " + unapplied);
         }
         return super.postProcessSupportingFileData(objs);
     }
